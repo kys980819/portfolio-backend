@@ -49,18 +49,16 @@ def send_message():
         if not client:
             return jsonify({"ok": False, "error": "OpenAI API 키가 설정되지 않았습니다"}), 500
         
-        # OpenAI API 호출
+        # OpenAI API 호출 (Responses API 사용)
         try:
-            response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "user", "content": message}
-                ],
+            response = client.responses.create(
+                model="gpt-4o",
+                prompt=message,
                 max_tokens=1000,
                 temperature=0.7
             )
             
-            ai_response = response.choices[0].message.content
+            ai_response = response.choices[0].text
             print("AI 응답:", ai_response)
             
             return jsonify({"ok": True, "response": ai_response}), 200
