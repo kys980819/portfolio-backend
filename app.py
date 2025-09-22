@@ -62,6 +62,15 @@ else:
     client = openai.OpenAI(api_key=api_key, timeout=openai_timeout)
     logger.info("OpenAI 클라이언트가 성공적으로 초기화되었습니다.")
 
+# 벡터스토어 ID 환경변수 로드 (.env: VECTOR_STORE_IDS=vs_xxx[,vs_yyy])
+vector_store_ids_env = os.getenv('VECTOR_STORE_IDS', '').strip()
+if vector_store_ids_env:
+    VECTOR_STORE_IDS = [v.strip() for v in vector_store_ids_env.split(',') if v.strip()]
+    logger.info(f"벡터스토어 IDs 설정됨: {VECTOR_STORE_IDS}")
+else:
+    VECTOR_STORE_IDS = []
+    logger.warning("VECTOR_STORE_IDS 환경변수가 설정되지 않았습니다. 파일 검색 도구를 사용할 수 없습니다.")
+
 # 헬스체크 엔드포인트
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -98,14 +107,23 @@ def send_message():
             logger.error("OpenAI API 키가 설정되지 않았습니다.")
             return jsonify({"ok": False, "error": "OpenAI API 키가 설정되지 않았습니다"}), 500
         
+        # 벡터스토어 ID 확인
+        if not VECTOR_STORE_IDS:
+            logger.error("VECTOR_STORE_IDS 환경변수가 설정되지 않았습니다.")
+            return jsonify({"ok": False, "error": "VECTOR_STORE_IDS가 설정되지 않아 파일 검색을 사용할 수 없습니다"}), 500
+        
         # OpenAI API 호출 (Responses API 사용)
         try:
             logger.info("OpenAI API 호출 시작")
             response = client.responses.create(
-                model="gpt-4o",
-                input=message,
-                max_output_tokens=max_output_tokens
+                model="gpt-4.1",
+                input=[
+                    {"role": "system", "content": "너는 김윤성의 이력서를 보고 답변하는 챗봇이야"},
+                    {"role": "user", "content": message}
+                ],
+                tools=[{"type": "file_search", "vector_store_ids": VECTOR_STORE_IDS}]
             )
+
             
             ai_response = response.output_text
             logger.info(f"AI 응답 생성 완료: {len(ai_response)}자")
