@@ -175,8 +175,9 @@ def send_message():
             else:
                 logger.warning("MongoDB 컬렉션이 설정되지 않아 응답을 저장하지 않습니다.")
 
-            # 클라이언트 응답
+            # 클라이언트 응답 (일관된 성공 스키마)
             return jsonify({
+                "ok": True,
                 "response": ai_response,
                 "session_id": session_id,
                 "conversation_id": conversation_id
