@@ -4,6 +4,9 @@ import openai
 import os
 import logging
 from dotenv import load_dotenv
+from pymongo import MongoClient, errors as pymongo_errors
+import uuid
+from datetime import datetime, timezone
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -71,6 +74,28 @@ else:
     VECTOR_STORE_IDS = []
     logger.warning("VECTOR_STORE_IDS 환경변수가 설정되지 않았습니다. 파일 검색 도구를 사용할 수 없습니다.")
 
+# MongoDB 연결 설정 (.env: MONGO_URI, MONGO_DB, MONGO_COLLECTION)
+mongo_client = None
+mongo_collection = None
+mongo_uri = os.getenv('MONGO_URI')
+mongo_db_name = os.getenv('MONGO_DB')
+mongo_collection_name = os.getenv('MONGO_COLLECTION')
+
+if mongo_uri and mongo_db_name and mongo_collection_name:
+    try:
+        mongo_client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
+        # 연결 확인 (ping)
+        mongo_client.admin.command('ping')
+        db = mongo_client[mongo_db_name]
+        mongo_collection = db[mongo_collection_name]
+        logger.info(f"MongoDB 연결 성공: db={mongo_db_name}, collection={mongo_collection_name}")
+    except pymongo_errors.PyMongoError as e:
+        logger.error(f"MongoDB 연결 실패: {str(e)}")
+        mongo_client = None
+        mongo_collection = None
+else:
+    logger.warning("MONGO_URI/MONGO_DB/MONGO_COLLECTION 환경변수가 설정되지 않았습니다. 응답 저장이 비활성화됩니다.")
+
 # 헬스체크 엔드포인트
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -94,6 +119,10 @@ def send_message():
         if data is None:
             return jsonify({"ok": False, "error": "Invalid JSON data"}), 400
         
+        # 세션/대화 ID 수집
+        session_id = request.headers.get('X-Session-Id') or str(uuid.uuid4())
+        conversation_id = data.get('conversation_id') or str(uuid.uuid4())
+
         message = data.get('message')  # "message" 키 값 가져오기
         
         # message 필드 검증
@@ -127,8 +156,31 @@ def send_message():
             
             ai_response = response.output_text
             logger.info(f"AI 응답 생성 완료: {len(ai_response)}자")
-            
-            return jsonify({"ok": True, "response": ai_response}), 200
+
+            # MongoDB 저장 (가능한 경우에만)
+            if mongo_collection is not None:
+                try:
+                    doc = {
+                        "session_id": session_id,
+                        "conversation_id": conversation_id,
+                        "user": "guest",
+                        "message": message,
+                        "response": ai_response,
+                        "time": datetime.now(timezone.utc).isoformat()
+                    }
+                    mongo_collection.insert_one(doc)
+                    logger.info("대화 레코드가 MongoDB에 저장되었습니다.")
+                except pymongo_errors.PyMongoError as e:
+                    logger.error(f"MongoDB 저장 실패: {str(e)}")
+            else:
+                logger.warning("MongoDB 컬렉션이 설정되지 않아 응답을 저장하지 않습니다.")
+
+            # 클라이언트 응답
+            return jsonify({
+                "response": ai_response,
+                "session_id": session_id,
+                "conversation_id": conversation_id
+            }), 200
             
         except openai.OpenAIError as e:
             logger.error(f"OpenAI API 에러: {str(e)}")
