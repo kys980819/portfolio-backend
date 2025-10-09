@@ -1,0 +1,34 @@
+name: Deploy to EC2   # 워크플로우 이름 (표시용)
+
+on:
+  push:
+    branches:
+      - main          # main 브랜치에 push될 때만 자동 실행됨
+
+jobs:
+  deploy:             # 작업(Job) 이름 (식별용)
+    runs-on: ubuntu-latest   # GitHub에서 제공하는 리눅스 환경에서 실행
+
+    steps:
+      - name: Checkout repository   # 1단계: 깃허브 저장소의 최신 코드 가져오기
+        uses: actions/checkout@v4   # GitHub 공식 액션 (코드 체크아웃)
+
+      - name: Deploy to EC2         # 2단계: EC2 서버에 접속해서 배포 수행
+        uses: appleboy/ssh-action@v1.0.3   # SSH로 명령을 실행해주는 액션
+        with:
+          host: ${{ secrets.EC2_HOST }}      # EC2 IP 주소 (Secrets에 등록)
+          username: ubuntu  # EC2 접속 유저명 (나는 ubuntu 사용하고 있고 굳이 시크릿 사용하지 않아도 되서  불러오기 사용X)
+          key: ${{ secrets.EC2_SSH_KEY }}    # EC2 개인키 (Secrets에 등록)
+          script: |                          # 아래의 여러 줄은 EC2 안에서 실행됨
+            set -e                           
+            cd /home/ubuntu/apps/portfolio-backend
+            git fetch --all
+            git reset --hard origin/main
+            ./venv/bin/pip install --upgrade pip
+            ./venv/bin/pip install -r requirements.txt
+            sudo systemctl restart portfolio-backend
+          # 에러 발생 시 즉시 중단
+          # 1) 배포할 프로젝트 폴더로 이동
+          # 2) 최신 main 브랜치 코드로 맞추기
+          # 3) 의존성(pip 패키지) 업데이트
+          # 4) Flask 앱을 systemd 서비스로 재시작
