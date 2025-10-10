@@ -1,34 +1,63 @@
-name: Deploy to EC2   # 워크플로우 이름 (표시용)
+name: Hybrid CI/CD
 
 on:
   push:
-    branches:
-      - main          # main 브랜치에 push될 때만 자동 실행됨
+    branches: [ main ]       # main 브랜치에 코드가 push될 때 자동 실행
+  workflow_dispatch:         # 수동 실행 버튼도 함께 허용 (GitHub Actions UI에서 실행 가능)
 
 jobs:
-  deploy:             # 작업(Job) 이름 (식별용)
-    runs-on: ubuntu-latest   # GitHub에서 제공하는 리눅스 환경에서 실행
-
+  # 1. CI 단계: GitHub-Hosted 러너 (코드 확인용)
+  build:
+    runs-on: ubuntu-latest   # GitHub이 제공하는 Ubuntu 가상 머신(Hosted Runner)
     steps:
-      - name: Checkout repository   # 1단계: 깃허브 저장소의 최신 코드 가져오기
-        uses: actions/checkout@v4   # GitHub 공식 액션 (코드 체크아웃)
-
-      - name: Deploy to EC2         # 2단계: EC2 서버에 접속해서 배포 수행
-        uses: appleboy/ssh-action@v1.0.3   # SSH로 명령을 실행해주는 액션
+      # (1) 현재 GitHub 저장소의 코드 체크아웃 (즉, 가져오기)
+      - uses: actions/checkout@v4
+      # (2) 파이썬 실행환경 세팅 (GitHub 러너에는 기본적으로 파이썬이 없기 때문)
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          host: ${{ secrets.EC2_HOST }}      # EC2 IP 주소 (Secrets에 등록)
-          username: ubuntu  # EC2 접속 유저명 (나는 ubuntu 사용하고 있고 굳이 시크릿 사용하지 않아도 되서  불러오기 사용X)
-          key: ${{ secrets.EC2_SSH_KEY }}    # EC2 개인키 (Secrets에 등록)
-          script: |                          # 아래의 여러 줄은 EC2 안에서 실행됨
-            set -e                           
-            cd /home/ubuntu/apps/portfolio-backend
-            git fetch --all
-            git reset --hard origin/main
-            ./venv/bin/pip install --upgrade pip
-            ./venv/bin/pip install -r requirements.txt
-            sudo systemctl restart portfolio-backend
-          # 에러 발생 시 즉시 중단
-          # 1) 배포할 프로젝트 폴더로 이동
-          # 2) 최신 main 브랜치 코드로 맞추기
-          # 3) 의존성(pip 패키지) 업데이트
-          # 4) Flask 앱을 systemd 서비스로 재시작
+          python-version: "3.12.3"   # 파이썬 버전 고정 (EC2와 맞추면 좋음)
+      # (3) requirements.txt에 있는 패키지 설치 (테스트용)
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      # (4) 간단한 테스트 (파이썬 실행만 되는지 확인)
+      - name: Syntax check
+        run: |
+          files=$(git ls-files '*.py' || true)
+          if [ "$files" ]; then
+            echo "Python 파일 문법 검사 시작"
+            python -m py_compile $files
+            echo "CI Test OK(문법 이상 없음)"
+          else
+            echo "검사할 Python 파일이 없습니다"
+          fi
+
+  # 2. 배포 단계: EC2(Self-Hosted 러너)
+  deploy:
+    needs: build            # build Job이 끝난 뒤에 실행
+    runs-on: self-hosted
+    steps:
+      - name: Deploy to EC2
+        shell: bash
+        run: |
+          set -e
+          APP_DIR="/home/ubuntu/apps/portfolio-backend"
+
+          echo "[1/3] 최신 코드로 업데이트"
+          cd "$APP_DIR"
+          git fetch origin main
+          git reset --hard origin/main
+
+          echo "[2/3] 의존성 설치"
+          if [ ! -d "venv" ]; then
+            python3 -m venv venv
+          fi
+          source venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+          echo "[3/3] 서비스 재시작"
+          sudo systemctl restart portfolio-backend
+          sudo systemctl --no-pager --full status portfolio-backend | head -n 30
