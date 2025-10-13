@@ -6,7 +6,8 @@ import logging
 from dotenv import load_dotenv
 from pymongo import MongoClient, errors as pymongo_errors
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -69,7 +70,7 @@ else:
 vector_store_ids_env = os.getenv('VECTOR_STORE_IDS', '').strip()
 if vector_store_ids_env:
     VECTOR_STORE_IDS = [v.strip() for v in vector_store_ids_env.split(',') if v.strip()]
-    logger.info(f"벡터스토어 IDs 설정됨: {VECTOR_STORE_IDS}")
+    logger.info(f"벡터스토어 ID가 {len(VECTOR_STORE_IDS)}개 설정되었습니다.")
 else:
     VECTOR_STORE_IDS = []
     logger.warning("VECTOR_STORE_IDS 환경변수가 설정되지 않았습니다. 파일 검색 도구를 사용할 수 없습니다.")
@@ -166,7 +167,7 @@ def send_message():
                         "user": "guest",
                         "message": message,
                         "response": ai_response,
-                        "time": datetime.now(timezone.utc).isoformat()
+                        "time": datetime.now(ZoneInfo("Asia/Seoul")).isoformat()
                     }
                     mongo_collection.insert_one(doc)
                     logger.info("대화 레코드가 MongoDB에 저장되었습니다.")
@@ -195,4 +196,4 @@ def send_message():
 if __name__ == '__main__':
     logger.info("Flask 서버를 시작합니다...")
     logger.info(f"OpenAI 클라이언트 상태: {'연결됨' if client else '연결 안됨'}")
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=5000)
