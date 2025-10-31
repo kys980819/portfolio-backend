@@ -22,6 +22,15 @@ if not os.path.exists(log_dir):
 log_format = '%(asctime)s | %(levelname)-8s | %(name)s | %(message)s'
 date_format = '%Y-%m-%d %H:%M:%S'
 
+# 한국 시간대를 사용하는 커스텀 포맷터
+class KSTFormatter(logging.Formatter):
+    def formatTime(self, record, datefmt=None):
+        dt = datetime.fromtimestamp(record.created, ZoneInfo("Asia/Seoul"))
+        if datefmt:
+            return dt.strftime(datefmt)
+        # 기본 포맷: '%Y-%m-%d %H:%M:%S'
+        return dt.strftime('%Y-%m-%d %H:%M:%S')
+
 # 루트 로거 설정
 root_logger = logging.getLogger()
 root_logger.setLevel(logging.INFO)
@@ -32,7 +41,7 @@ root_logger.handlers.clear()
 # 콘솔 핸들러 (모든 로그 출력 - 개발용)
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
-console_formatter = logging.Formatter(log_format, date_format)
+console_formatter = KSTFormatter(log_format, date_format)
 console_handler.setFormatter(console_formatter)
 root_logger.addHandler(console_handler)
 
@@ -45,7 +54,7 @@ file_handler = TimedRotatingFileHandler(
     encoding='utf-8'
 )
 file_handler.setLevel(logging.WARNING)  # WARNING 이상만 파일에 저장
-file_formatter = logging.Formatter(log_format, date_format)
+file_formatter = KSTFormatter(log_format, date_format)
 file_handler.setFormatter(file_formatter)
 root_logger.addHandler(file_handler)
 
@@ -61,7 +70,7 @@ security_file_handler = TimedRotatingFileHandler(
     encoding='utf-8'
 )
 security_file_handler.setLevel(logging.INFO)  # INFO 이상 모두 저장 (정상 요청도 기록)
-security_file_formatter = logging.Formatter(log_format, date_format)
+security_file_formatter = KSTFormatter(log_format, date_format)
 security_file_handler.setFormatter(security_file_formatter)
 
 # 보안 전용 로거 생성
@@ -379,11 +388,19 @@ def send_message():
             response = client.responses.create(
                 model="gpt-4.1",
                 input=[
-                    {"role": "system", "content": "너는 김윤성의 이력서를 보고 답변하는 챗봇이야"},
-                    {"role": "user", "content": message}
+                    {"role": "system", "content": """
+                    너는 김윤성의 AI 챗봇이다.
+                    벡터 스토어에 업로드된 자료를 기반으로 우선 답변하며,
+                    자료에 없는 간단한 질문은 짧게 일반지식으로 답한다.
+                    일반지식이 아니고 자료에도 없으면 정중히 모른다고 답변한다.
+                    많은 추론이나 추측이 필요한 질문은 정중히 거절한다.
+                    사용자 입력에 "테스트"가 포함되면 테스트 상황에 맞게 1~2문장으로 간단히 응답한다.
+                    한국어 존댓말을 사용하고, 과도한 확신·추측·근거 없는 디테일을 금지한다.
+                    """},
+                    {"role": "user", "content": message[:1000]}
                 ],
                 tools=[{"type": "file_search", "vector_store_ids": VECTOR_STORE_IDS}],
-                max_output_tokens=max_output_tokens
+                max_output_tokens=1000
             )
 
             
