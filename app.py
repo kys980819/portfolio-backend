@@ -3,16 +3,72 @@ from flask_cors import CORS
 import openai
 import os
 import logging
+from logging.handlers import TimedRotatingFileHandler
 from dotenv import load_dotenv
 from pymongo import MongoClient, errors as pymongo_errors
 import uuid
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import requests
+import re
+from collections import defaultdict
 
-# 로깅 설정
-logging.basicConfig(level=logging.INFO)
+# 로그 디렉토리 생성
+log_dir = 'logs'
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
+# 로그 포맷 통일화
+log_format = '%(asctime)s | %(levelname)-8s | %(name)s | %(message)s'
+date_format = '%Y-%m-%d %H:%M:%S'
+
+# 루트 로거 설정
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+
+# 기존 핸들러 제거 (기본 설정 초기화)
+root_logger.handlers.clear()
+
+# 콘솔 핸들러 (모든 로그 출력 - 개발용)
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.INFO)
+console_formatter = logging.Formatter(log_format, date_format)
+console_handler.setFormatter(console_formatter)
+root_logger.addHandler(console_handler)
+
+# 파일 핸들러 (저장할 로그만 - WARNING 이상)
+file_handler = TimedRotatingFileHandler(
+    filename=os.path.join(log_dir, 'app.log'),
+    when='midnight',
+    interval=1,
+    backupCount=30,  # 30일 보관
+    encoding='utf-8'
+)
+file_handler.setLevel(logging.WARNING)  # WARNING 이상만 파일에 저장
+file_formatter = logging.Formatter(log_format, date_format)
+file_handler.setFormatter(file_formatter)
+root_logger.addHandler(file_handler)
+
+# 애플리케이션 로거
 logger = logging.getLogger(__name__)
+
+# 보안 로그 전용 핸들러 (파일에만 저장, 콘솔 출력 안함)
+security_file_handler = TimedRotatingFileHandler(
+    filename=os.path.join(log_dir, 'security.log'),
+    when='midnight',
+    interval=1,
+    backupCount=90,  # 보안 로그는 90일 보관
+    encoding='utf-8'
+)
+security_file_handler.setLevel(logging.INFO)  # INFO 이상 모두 저장 (정상 요청도 기록)
+security_file_formatter = logging.Formatter(log_format, date_format)
+security_file_handler.setFormatter(security_file_formatter)
+
+# 보안 전용 로거 생성
+security_logger = logging.getLogger('security')
+security_logger.setLevel(logging.INFO)  # INFO 이상 모두 저장
+security_logger.addHandler(security_file_handler)
+security_logger.propagate = False  # 루트 로거로 전파하지 않음 (콘솔 출력 안함)
 
 # .env 파일 로드 (파일이 없어도 에러가 발생하지 않도록 처리)
 try:
@@ -35,6 +91,56 @@ CORS(app, resources={r"/*": {"origins": allowed_origins}})
 
 # 요청 크기 제한 설정 (1MB)
 app.config['MAX_CONTENT_LENGTH'] = 1 * 1024 * 1024
+
+# 보안 헬퍼 함수
+request_counter = defaultdict(list)  # 요청 빈도 추적을 위한 딕셔너리
+
+def get_client_ip():
+    """클라이언트 IP 주소 가져오기 (프록시 고려)"""
+    if request.headers.get('X-Forwarded-For'):
+        return request.headers.get('X-Forwarded-For').split(',')[0].strip()
+    elif request.headers.get('X-Real-IP'):
+        return request.headers.get('X-Real-IP')
+    return request.remote_addr
+
+def detect_suspicious_pattern(text):
+    """의심스러운 패턴 감지"""
+    if not text:
+        return None
+    
+    suspicious_patterns = [
+        (r'<script', '스크립트 태그 시도'),
+        (r'union.*select', 'SQL 인젝션 시도', re.IGNORECASE),
+        (r'exec\(|eval\(', '코드 실행 시도'),
+        (r'\.\.\/', '경로 탐색 시도'),
+        (r'\/etc\/passwd', '시스템 파일 접근 시도'),
+    ]
+    
+    for pattern_info in suspicious_patterns:
+        if len(pattern_info) == 3:
+            pattern, description, flag = pattern_info
+        else:
+            pattern, description = pattern_info
+            flag = 0
+        
+        if re.search(pattern, text, flag):
+            return description
+    
+    return None
+
+def check_request_frequency(client_ip, threshold=10, window_seconds=60):
+    """비정상적인 요청 빈도 체크 (간단한 rate limiting 감지)"""
+    now = datetime.now()
+    request_counter[client_ip] = [
+        req_time for req_time in request_counter[client_ip]
+        if (now - req_time).total_seconds() < window_seconds
+    ]
+    
+    request_counter[client_ip].append(now)
+    
+    if len(request_counter[client_ip]) > threshold:
+        return True
+    return False
 
 # OpenAI 타임아웃/토큰 제한 설정
 timeout_env = os.getenv('OPENAI_TIMEOUT', '30').strip()
@@ -164,6 +270,18 @@ def send_telegram_notification(user_message, ai_response, session_id):
     except Exception as e:
         logger.error(f'텔레그램 알림 발송 중 예상치 못한 오류: {str(e)}')
 
+# 요청 크기 초과 에러 핸들러
+@app.errorhandler(413)
+def request_entity_too_large(error):
+    """요청 크기 초과 처리"""
+    client_ip = get_client_ip()
+    request_size = request.content_length if request.content_length else 'Unknown'
+    security_logger.warning(
+        f"[보안 이벤트] 요청 크기 초과 | IP: {client_ip} | "
+        f"Size: {request_size} bytes | Path: {request.path}"
+    )
+    return jsonify({"ok": False, "error": "Request entity too large"}), 413
+
 # 헬스체크 엔드포인트
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -178,24 +296,69 @@ def health_check():
 @app.route('/sendMessage', methods=['POST'])
 def send_message():
     try:
+        # 클라이언트 IP 가져오기
+        client_ip = get_client_ip()
+        session_id = request.headers.get('x-session-id') or str(uuid.uuid4())
+        
+        # 요청 라우팅 정보 로깅 (일반 로그)
+        logger.info(f"[요청] IP: {client_ip} | Method: {request.method} | Path: {request.path} | Session: {session_id}")
+        
+        # 비정상적인 요청 빈도 체크
+        if check_request_frequency(client_ip):
+            security_logger.warning(
+                f"[보안 이벤트] 비정상적인 요청 빈도 | IP: {client_ip} | "
+                f"Path: {request.path} | Session: {session_id}"
+            )
+        
         # Content-Type 확인 및 JSON 파싱
         if not request.is_json:
+            security_logger.warning(
+                f"[보안 이벤트] 잘못된 Content-Type | IP: {client_ip} | "
+                f"Content-Type: {request.content_type} | Session: {session_id}"
+            )
             return jsonify({"ok": False, "error": "Content-Type must be application/json"}), 415
+            
         data = request.get_json(silent=True)  # 요청에서 JSON 데이터 꺼내기 (silent)
         
         # JSON 파싱 실패 시 처리
         if data is None:
+            security_logger.warning(
+                f"[보안 이벤트] JSON 파싱 실패 | IP: {client_ip} | "
+                f"Session: {session_id}"
+            )
             return jsonify({"ok": False, "error": "Invalid JSON data"}), 400
-        
-        # 세션/대화 ID 수집
-        session_id = request.headers.get('x-session-id') or str(uuid.uuid4())
-        conversation_id = data.get('conversation_id') or str(uuid.uuid4())
 
-        message = data.get('message')  # "message" 키 값 가져오기
+        conversation_id = data.get('conversation_id') or str(uuid.uuid4())
+        message = data.get('message') or ""
+        
+        # 의심스러운 패턴 감지
+        suspicious = detect_suspicious_pattern(message)
+        if suspicious:
+            security_logger.warning(
+                f"[보안 이벤트] {suspicious} | IP: {client_ip} | "
+                f"Session: {session_id} | Message: {message[:100]}"
+            )
+        
+        # 비정상적으로 긴 메시지 감지
+        if len(message) > 5000:
+            security_logger.warning(
+                f"[보안 이벤트] 비정상적으로 긴 메시지 | IP: {client_ip} | "
+                f"Session: {session_id} | Length: {len(message)}"
+            )
         
         # message 필드 검증
         if not message or not message.strip():
+            security_logger.warning(
+                f"[보안 이벤트] 빈 메시지 요청 | IP: {client_ip} | "
+                f"Session: {session_id}"
+            )
             return jsonify({"ok": False, "error": "Message is required and cannot be empty"}), 400
+
+        # 정상 요청 로깅 (보안 로그에 기록)
+        security_logger.info(
+            f"[정상 요청] IP: {client_ip} | Session: {session_id} | "
+            f"Message Length: {len(message)}"
+        )
 
         logger.info(f"사용자가 보낸 메시지: {message}")
         logger.info(f"수신 메시지 길이: {len(message)}")

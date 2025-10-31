@@ -9,3 +9,7 @@ __pycache__/
 
 # venv
 venv/
+
+# logs
+logs/
+*.log
