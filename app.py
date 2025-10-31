@@ -88,6 +88,27 @@ except Exception as e:
 
 # Flask 앱 생성
 app = Flask(__name__)
+
+# Flask와 Werkzeug 로거도 한국 시간으로 설정
+for logger_name in ['flask', 'werkzeug']:
+    lib_logger = logging.getLogger(logger_name)
+    lib_logger.setLevel(logging.INFO)
+    # 기존 핸들러 제거
+    lib_logger.handlers.clear()
+    # 한국 시간 포맷터 적용
+    lib_handler = logging.StreamHandler()
+    lib_handler.setFormatter(KSTFormatter(log_format, date_format))
+    lib_logger.addHandler(lib_handler)
+    lib_logger.propagate = False
+
+# Flask app.logger도 한국 시간으로 설정
+app.logger.setLevel(logging.INFO)
+app.logger.handlers.clear()
+app_logger_handler = logging.StreamHandler()
+app_logger_handler.setFormatter(KSTFormatter(log_format, date_format))
+app.logger.addHandler(app_logger_handler)
+app.logger.propagate = False
+
 # CORS 제한 (환경변수 ALLOWED_ORIGINS 사용, 콤마로 구분)
 allowed_origins_env = os.getenv('ALLOWED_ORIGINS', '').strip()
 if allowed_origins_env:
